@@ -1,3 +1,5 @@
 opencv-python
 mediapipe
+open3d
 numpy
+trimesh
