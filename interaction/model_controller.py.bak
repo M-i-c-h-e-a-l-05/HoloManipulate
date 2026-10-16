@@ -1,0 +1,87 @@
+import math
+import numpy as np
+
+
+class ModelController:
+    def __init__(self, geometry):
+        self.geometry = geometry
+        self.previous_mode = None
+        self.previous_tip = None
+        self.previous_wrist_distance = None
+
+    @staticmethod
+    def distance(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def update(self, state, landmarks):
+        mode = state["mode"]
+        hands = state["hands"]
+
+        # Reset motion references when the active gesture changes.
+        if mode != self.previous_mode:
+            self.previous_tip = None
+            self.previous_wrist_distance = None
+            self.previous_mode = mode
+
+        # Two-hand scaling only works after the fingertip activation.
+        if state["scaling_mode"] and len(landmarks) == 2:
+            wrist_a = (landmarks[0][0].x, landmarks[0][0].y)
+            wrist_b = (landmarks[1][0].x, landmarks[1][0].y)
+            wrist_distance = self.distance(wrist_a, wrist_b)
+
+            if self.previous_wrist_distance is not None:
+                old = self.previous_wrist_distance
+                if old > 0.01:
+                    factor = wrist_distance / old
+                    factor = max(0.94, min(1.06, factor))
+
+                    if abs(factor - 1.0) > 0.003:
+                        factor = max(0.95, min(1.05, factor))
+                        self.geometry.scale(
+                            factor, center=self.geometry.get_center()
+                        )
+
+            self.previous_wrist_distance = wrist_distance
+            return
+
+        # Two hands without activation do not move or rotate the model.
+        if len(landmarks) != 1 or len(hands) != 1:
+            self.previous_tip = None
+            return
+
+        hand = landmarks[0]
+        gesture = hands[0]["gesture"]
+
+        if gesture not in ("ROTATE", "MOVE"):
+            self.previous_tip = None
+            return
+
+        # Index fingertip for rotation; wrist for fist movement.
+        if gesture == "ROTATE":
+            point = (hand[8].x, hand[8].y)
+        else:
+            point = (hand[0].x, hand[0].y)
+
+        if self.previous_tip is not None:
+            dx = point[0] - self.previous_tip[0]
+            dy = point[1] - self.previous_tip[1]
+
+            if gesture == "ROTATE":
+                center = self.geometry.get_center()
+                rotation_z = np.array([
+                    [math.cos(-dx * 4.0), -math.sin(-dx * 4.0), 0],
+                    [math.sin(-dx * 4.0),  math.cos(-dx * 4.0), 0],
+                    [0, 0, 1],
+                ])
+                self.geometry.rotate(rotation_z, center=center)
+                self.geometry.rotate(
+                    self.geometry.get_rotation_matrix_from_xyz(
+                        (dy * 3.0, 0, 0)
+                    ),
+                    center=self.geometry.get_center(),
+                )
+
+            elif gesture == "MOVE":
+                self.geometry.translate([dx * 8.0, -dy * 8.0, 0])
+
+        self.previous_tip = point

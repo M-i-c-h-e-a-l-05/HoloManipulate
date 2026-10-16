@@ -1,0 +1,109 @@
+import math
+import time
+
+
+class GestureRecognizer:
+    HOLD_SECONDS = 1.0
+
+    # Index fingertips must be this close in normalized image coordinates.
+    # We'll calibrate this using the live webcam if necessary.
+    FINGERTIP_DISTANCE_THRESHOLD = 0.06
+
+    def __init__(self):
+        self.scaling_mode = False
+        self.hold_started = None
+        self.must_separate = False
+
+    @staticmethod
+    def distance(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    @staticmethod
+    def finger_extended(hand, tip, pip):
+        return hand[tip].y < hand[pip].y
+
+    def classify_hand(self, hand):
+        index = self.finger_extended(hand, 8, 6)
+        middle = self.finger_extended(hand, 12, 10)
+        ring = self.finger_extended(hand, 16, 14)
+        pinky = self.finger_extended(hand, 20, 18)
+
+        if index and not middle and not ring and not pinky:
+            return "ROTATE"
+
+        if not index and not middle and not ring and not pinky:
+            return "MOVE"
+
+        return "IDLE"
+
+    def recognize(self, results):
+        now = time.monotonic()
+        landmarks = results.hand_landmarks
+        hand_states = []
+
+        for hand in landmarks:
+            hand_states.append({
+                "gesture": self.classify_hand(hand),
+                "index_tip": (hand[8].x, hand[8].y),
+            })
+
+        activation_gesture = False
+        fingertip_distance = None
+        progress = 0.0
+
+        if len(hand_states) == 2:
+            tip_a = hand_states[0]["index_tip"]
+            tip_b = hand_states[1]["index_tip"]
+
+            fingertip_distance = self.distance(tip_a, tip_b)
+            activation_gesture = (
+                fingertip_distance < self.FINGERTIP_DISTANCE_THRESHOLD
+            )
+
+        if activation_gesture and not self.must_separate:
+            if self.hold_started is None:
+                self.hold_started = now
+
+            progress = min(
+                1.0, (now - self.hold_started) / self.HOLD_SECONDS
+            )
+
+            if now - self.hold_started >= self.HOLD_SECONDS:
+                self.scaling_mode = not self.scaling_mode
+                self.hold_started = None
+                self.must_separate = True
+                progress = 1.0
+
+        elif not activation_gesture:
+            self.hold_started = None
+            progress = 0.0
+            self.must_separate = False
+
+        if self.scaling_mode:
+            mode = "SCALING MODE: ON"
+        elif len(hand_states) == 2:
+            mode = "TWO HANDS: READY"
+        elif len(hand_states) == 1:
+            mode = hand_states[0]["gesture"]
+        else:
+            mode = "IDLE - SHOW YOUR HANDS"
+
+        if len(hand_states) < 2:
+            activation_status = "Show both hands clearly"
+        elif self.must_separate:
+            activation_status = "Separate fingertips to re-arm"
+        elif activation_gesture:
+            activation_status = f"Hold fingertips together: {progress * 100:.0f}%"
+        else:
+            activation_status = "Bring index fingertips together"
+
+        return {
+            "mode": mode,
+            "scaling_mode": self.scaling_mode,
+            "hands": hand_states,
+            "activation_gesture": activation_gesture,
+            "activation_status": activation_status,
+            "hold_progress": progress,
+            "fingertip_distance": fingertip_distance,
+            "must_separate": self.must_separate,
+        }
